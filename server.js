@@ -5,7 +5,7 @@ import initSqlJs from "sql.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// Fix __dirname in ES modules
+// Fix __dirname in ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -13,22 +13,24 @@ const app = express();
 const PORT = 3000;
 
 app.use(cors());
-app.use(express.static("."));
 app.use(express.json());
+app.use(express.static("."));
 
 let db;
 const DB_FILE = "urls.db";
 
-// Random word generator for short codes
-const words = [
-  "apple","banana","cherry","delta","echo","foxtrot","golf","hotel",
-  "india","juliet","kilo","lima","mango","nectar","oscar","panda",
-  "quokka","romeo","sierra","tango","umbrella","violet","whiskey",
-  "xray","yankee","zulu"
-];
+// Base62 characters
+const BASE62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-function randomWordCode() {
-  return words[Math.floor(Math.random() * words.length)] + "-" + words[Math.floor(Math.random() * words.length)];
+// Encode number to Base62
+function encodeBase62(num) {
+  if (num === 0) return "0";
+  let str = "";
+  while (num > 0) {
+    str = BASE62[num % 62] + str;
+    num = Math.floor(num / 62);
+  }
+  return str;
 }
 
 // Save DB to file
@@ -37,7 +39,7 @@ function saveDb() {
   fs.writeFileSync(DB_FILE, Buffer.from(data));
 }
 
-// Initialize DB
+// Initialize database
 (async () => {
   const SQL = await initSqlJs({
     locateFile: file => path.join(__dirname, "sqljs", file),
@@ -50,7 +52,6 @@ function saveDb() {
     db = new SQL.Database();
   }
 
-  // Create table if not exists
   db.run(`
     CREATE TABLE IF NOT EXISTS urls (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,7 +78,7 @@ app.post("/shorten", (req, res) => {
   let shortCode;
 
   if (customCode) {
-    // Check for duplicate
+    // Check duplicate
     const stmt = db.prepare("SELECT * FROM urls WHERE shortCode = ?");
     stmt.bind([customCode]);
     if (stmt.step()) {
@@ -87,24 +88,25 @@ app.post("/shorten", (req, res) => {
     stmt.free();
     shortCode = customCode;
   } else {
-    // Generate random code
-    shortCode = randomWordCode();
-
-    // Ensure uniqueness
-    let stmt = db.prepare("SELECT * FROM urls WHERE shortCode = ?");
-    stmt.bind([shortCode]);
-    while (stmt.step()) {
-      shortCode = randomWordCode();
-      stmt.reset();
-      stmt.bind([shortCode]);
-    }
+    // Insert first to get auto-incremented id
+    db.run("INSERT INTO urls (longUrl, shortCode) VALUES (?, ?)", [longUrl, "temp"]);
+    const stmt = db.prepare("SELECT id FROM urls WHERE shortCode = ?");
+    stmt.bind(["temp"]);
+    stmt.step();
+    const { id } = stmt.getAsObject();
     stmt.free();
+
+    // Encode id to Base62
+    shortCode = encodeBase62(id);
+
+    // Update shortCode in DB
+    db.run("UPDATE urls SET shortCode = ? WHERE id = ?", [shortCode, id]);
   }
 
-  db.run("INSERT INTO urls (longUrl, shortCode) VALUES (?, ?)", [longUrl, shortCode]);
   saveDb();
 
-  res.json({ shortUrl: shortCode });
+  const fullShortUrl = `${req.protocol}://${req.get("host")}/${shortCode}`;
+  res.json({ shortUrl: fullShortUrl });
 });
 
 // Redirect short URL
@@ -125,7 +127,7 @@ app.get("/:shortCode", (req, res) => {
   }
 });
 
-// Get URL stats
+// URL stats
 app.get("/stats/:shortCode", (req, res) => {
   const { shortCode } = req.params;
   const stmt = db.prepare("SELECT longUrl, clicks FROM urls WHERE shortCode = ?");
@@ -147,7 +149,7 @@ app.get("/", (req, res) => {
     <html>
       <head><title>URL Shortener</title></head>
       <body style="font-family:sans-serif;text-align:center;margin-top:50px">
-        <h2>Simple URL Shortener</h2>
+        <h2>URL Shortener</h2>
         <input type="text" id="urlInput" placeholder="Enter long URL" style="width:60%;padding:10px">
         <input type="text" id="customCode" placeholder="Optional custom code" style="width:30%;padding:10px">
         <button onclick="shorten()">Shorten</button>
@@ -163,7 +165,7 @@ app.get("/", (req, res) => {
             });
             const data = await res.json();
             document.getElementById("result").innerHTML = data.shortUrl
-              ? '<a href="'+data.shortUrl+'" target="_blank">'+data.shortUrl+'</a>'
+              ? '<a href="'+data.shortUrl+'" target="_blank">'+data.shortUrl.split("/").pop()+'</a>'
               : data.error;
           }
         </script>
