@@ -2,10 +2,11 @@ import express from "express";
 import cors from "cors";
 import fs from "fs";
 import initSqlJs from "sql.js";
+import { nanoid } from "nanoid";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// Fix __dirname in ESM
+// Fix __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -18,20 +19,6 @@ app.use(express.static("."));
 
 let db;
 const DB_FILE = "urls.db";
-
-// Base62 characters
-const BASE62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-// Encode number to Base62
-function encodeBase62(num) {
-  if (num === 0) return "0";
-  let str = "";
-  while (num > 0) {
-    str = BASE62[num % 62] + str;
-    num = Math.floor(num / 62);
-  }
-  return str;
-}
 
 // Save DB to file
 function saveDb() {
@@ -67,7 +54,7 @@ function saveDb() {
 
 // ================= API ROUTES ==================
 
-// Create short URL
+// Shorten URL (random or custom)
 app.post("/shorten", (req, res) => {
   const { longUrl, customCode } = req.body;
 
@@ -88,28 +75,29 @@ app.post("/shorten", (req, res) => {
     stmt.free();
     shortCode = customCode;
   } else {
-    // Insert first to get auto-incremented id
-    db.run("INSERT INTO urls (longUrl, shortCode) VALUES (?, ?)", [longUrl, "temp"]);
-    const stmt = db.prepare("SELECT id FROM urls WHERE shortCode = ?");
-    stmt.bind(["temp"]);
-    stmt.step();
-    const { id } = stmt.getAsObject();
+    // Generate random 5-character code
+    shortCode = nanoid(5);
+
+    // Ensure uniqueness
+    let stmt = db.prepare("SELECT * FROM urls WHERE shortCode = ?");
+    stmt.bind([shortCode]);
+    while (stmt.step()) {
+      shortCode = nanoid(5);
+      stmt.reset();
+      stmt.bind([shortCode]);
+    }
     stmt.free();
-
-    // Encode id to Base62
-    shortCode = encodeBase62(id);
-
-    // Update shortCode in DB
-    db.run("UPDATE urls SET shortCode = ? WHERE id = ?", [shortCode, id]);
   }
 
+  db.run("INSERT INTO urls (longUrl, shortCode) VALUES (?, ?)", [longUrl, shortCode]);
   saveDb();
 
-  const fullShortUrl = `${req.protocol}://${req.get("host")}/${shortCode}`;
-  res.json({ shortUrl: fullShortUrl });
+  // Display as "shorturl/<code>" for users
+  const displayShortUrl = `shorturl/${shortCode}`;
+  res.json({ shortUrl: displayShortUrl });
 });
 
-// Redirect short URL
+// Redirect real short code
 app.get("/:shortCode", (req, res) => {
   const { shortCode } = req.params;
   const stmt = db.prepare("SELECT longUrl, clicks FROM urls WHERE shortCode = ?");
@@ -165,7 +153,7 @@ app.get("/", (req, res) => {
             });
             const data = await res.json();
             document.getElementById("result").innerHTML = data.shortUrl
-              ? '<a href="'+data.shortUrl+'" target="_blank">'+data.shortUrl.split("/").pop()+'</a>'
+              ? '<a href="'+window.location.origin+'/'+data.shortUrl.split("/")[1]+'" target="_blank">'+data.shortUrl+'</a>'
               : data.error;
           }
         </script>
