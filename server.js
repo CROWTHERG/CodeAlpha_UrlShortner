@@ -6,7 +6,7 @@ import { nanoid } from "nanoid";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// Fix __dirname in ES modules
+// Fix __dirname for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -20,7 +20,7 @@ app.use(express.static("."));
 let db;
 const DB_FILE = "urls.db";
 
-// Save DB to file
+// Save database to file
 function saveDb() {
   const data = db.export();
   fs.writeFileSync(DB_FILE, Buffer.from(data));
@@ -92,13 +92,13 @@ app.post("/shorten", (req, res) => {
   db.run("INSERT INTO urls (longUrl, shortCode) VALUES (?, ?)", [longUrl, shortCode]);
   saveDb();
 
-  // Display as "shorturl/<code>" for users
+  // Display as "shorturl/<code>"
   const displayShortUrl = `shorturl/${shortCode}`;
   res.json({ shortUrl: displayShortUrl });
 });
 
-// Redirect real short code
-app.get("/:shortCode", (req, res) => {
+// Redirect short URL
+app.get("/shorturl/:shortCode", (req, res) => {
   const { shortCode } = req.params;
   const stmt = db.prepare("SELECT longUrl, clicks FROM urls WHERE shortCode = ?");
   stmt.bind([shortCode]);
@@ -152,9 +152,12 @@ app.get("/", (req, res) => {
               body: JSON.stringify({ longUrl: url, customCode: code || null })
             });
             const data = await res.json();
-            document.getElementById("result").innerHTML = data.shortUrl
-              ? '<a href="'+window.location.origin+'/'+data.shortUrl.split("/")[1]+'" target="_blank">'+data.shortUrl+'</a>'
-              : data.error;
+            if(data.shortUrl){
+              // Link points to /shorturl/<code> route
+              document.getElementById("result").innerHTML = '<a href="/'+data.shortUrl+'" target="_blank">'+data.shortUrl+'</a>';
+            } else {
+              document.getElementById("result").innerText = data.error;
+            }
           }
         </script>
       </body>
