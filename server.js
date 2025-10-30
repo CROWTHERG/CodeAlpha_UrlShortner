@@ -1,38 +1,96 @@
 import express from "express";
-import initSqlJs from "sql.js";
-import { nanoid } from "nanoid";
 import cors from "cors";
 import fs from "fs";
+import initSqlJs from "sql.js";
+import { nanoid } from "nanoid";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// fix __dirname for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
+const PORT = 3000;
+
+app.use(cors());
 app.use(express.static("."));
 app.use(express.json());
-app.use(cors());
 
 let db;
-const init = async () => {
-  const SQL = await initSqlJs();
-  db = new SQL.Database();
-  db.run("CREATE TABLE IF NOT EXISTS urls (id TEXT PRIMARY KEY, short TEXT, original TEXT)");
-};
-await init();
 
-app.post("/shorten", (req, res) => {
-  const { url } = req.body;
-  const short = nanoid(6);
-  db.run("INSERT INTO urls (id, short, original) VALUES (?, ?, ?)", [short, short, url]);
-  res.json({ short });
-});
+(async () => {
+  // ✅ FIX: use local sql-wasm.wasm instead of remote URL
+  const SQL = await initSqlJs({
+    locateFile: file => path.join(__dirname, "sqljs", file),
+  });
 
-app.get("/:short", (req, res) => {
-  const stmt = db.prepare("SELECT original FROM urls WHERE short = ?");
-  stmt.bind([req.params.short]);
-  if (stmt.step()) {
-    const row = stmt.getAsObject();
-    res.redirect(row.original);
+  // Load or create the database
+  if (fs.existsSync("urls.db")) {
+    const filebuffer = fs.readFileSync("urls.db");
+    db = new SQL.Database(filebuffer);
   } else {
-    res.status(404).send("Not found");
+    db = new SQL.Database();
+    db.run(`
+      CREATE TABLE urls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        longUrl TEXT,
+        shortCode TEXT UNIQUE,
+        clicks INTEGER DEFAULT 0
+      );
+    `);
+    saveDb();
   }
+
+  console.log("✅ Database initialized and ready");
+})();
+
+function saveDb() {
+  const data = db.export();
+  fs.writeFileSync("urls.db", Buffer.from(data));
+}
+
+// ========================= API Routes =========================
+
+// Shorten URL
+app.post("/shorten", (req, res) => {
+  const { longUrl } = req.body;
+  if (!longUrl) return res.status(400).json({ error: "URL is required" });
+
+  const shortCode = nanoid(6);
+  db.run("INSERT INTO urls (longUrl, shortCode) VALUES (?, ?)", [longUrl, shortCode]);
+  saveDb();
+  res.json({ shortUrl: `http://localhost:${PORT}/${shortCode}` });
 });
 
-app.listen(3000, () => console.log("🚀 Running at http://localhost:3000"));
+// Redirect + track clicks
+app.get("/:shortCode", (req, res) => {
+  const { shortCode } = req.params;
+  const stmt = db.prepare("SELECT longUrl, clicks FROM urls WHERE shortCode = ?");
+  stmt.bind([shortCode]);
+  if (stmt.step()) {
+    const { longUrl, clicks } = stmt.getAsObject();
+    db.run("UPDATE urls SET clicks = ? WHERE shortCode = ?", [clicks + 1, shortCode]);
+    saveDb();
+    res.redirect(longUrl);
+  } else {
+    res.status(404).send("Short URL not found");
+  }
+  stmt.free();
+});
+
+// Fetch stats
+app.get("/stats/:shortCode", (req, res) => {
+  const { shortCode } = req.params;
+  const stmt = db.prepare("SELECT longUrl, clicks FROM urls WHERE shortCode = ?");
+  stmt.bind([shortCode]);
+  if (stmt.step()) {
+    res.json(stmt.getAsObject());
+  } else {
+    res.status(404).json({ error: "Not found" });
+  }
+  stmt.free();
+});
+
+// Start server
+app.listen(PORT, () => console.log(`🚀 Server running at http://localhost:${PORT}`));
